@@ -18,7 +18,7 @@ from ipi.engine.forcefields import (
     FFsGDML,
     FFCommittee,
     FFdmd,
-    FFCavPhSocket,
+    FFGenCavSocket,
 )
 from ipi.interfaces.sockets import InterfaceSocket
 import ipi.engine.initializer
@@ -35,7 +35,7 @@ __all__ = [
     "InputFFsGDML",
     "InputFFCommittee",
     "InputFFdmd",
-    "InputFFCavPhSocket",
+    "InputFFGenCavSocket",
 ]
 
 
@@ -249,7 +249,7 @@ class InputFFSocket(InputForceField):
            ff: A ForceField object with a FFSocket forcemodel object.
         """
 
-        if (not type(ff) is FFSocket) and (not type(ff) is FFCavPhSocket):
+        if (not type(ff) is FFSocket) and (not type(ff) is FFGenCavSocket):
             raise TypeError(
                 "The type " + type(ff).__name__ + " is not a valid socket forcefield"
             )
@@ -845,14 +845,48 @@ class InputFFCommittee(InputForceField):
         )
 
 
-class InputFFCavPhSocket(InputFFSocket):
+class InputFFGenCavSocket(InputFFSocket):
     default_help = """A cavity molecular dynamics driver for vibraitonal strong coupling. 
-                      In the current implementation, only a single cavity mode polarized along the x and y directions is coupled to the molecules.
+                      In the current implementation, multiple cavity modes are coupled to the molecules.
                       Check https://doi.org/10.1073/pnas.2009272117 and also examples/lammps/h2o-cavmd/ for details.
                    """
-    default_label = "FFCAVPHSOCKET"
+    default_label = "FFGENCAVSOCKET"
 
     fields = {
+        "n_independent_bath": (
+            InputValue,
+            {
+                "dtype": int,
+                "default": 1,
+                "help": "Number of identical independent copies of molecule ensembles.",
+            },
+        ),
+        "n_qm_atom": (
+            InputValue,
+            {
+                "dtype": int,
+                "default": 0,
+                "help": "Number of atoms that are needed to be calculated by QM methods in each bath (-1 means all atoms are QM).",
+            },
+        ),
+        "mm_charge_array": (
+            InputArray,
+            {
+                "dtype": float,
+                "default": input_default(factory=np.zeros, args=(0,)),
+                "help": "The partial charges of the MM atoms in each bath, in the format [Q1, Q2, ... ].",
+                "dimension": "length",
+            },
+        ),
+        "qm_charge_array": (
+            InputArray,
+            {
+                "dtype": float,
+                "default": input_default(factory=np.zeros, args=(0,)),
+                "help": "The partial charges of the QM atoms in each bath, in the format [Q1, Q2, ... ]. With this definition, dipole and its derivatives will not be computed",
+                "dimension": "length",
+            },
+        ),
         "charge_array": (
             InputArray,
             {
@@ -903,6 +937,58 @@ class InputFFCavPhSocket(InputFFSocket):
                 the x and y dimensions of this 'L' atom are coupled to the molecules.""",
             },
         ),
+        "domega_x": (
+            InputValue,
+            {
+                "dtype": float,
+                "default": 0.0,
+                "help": "Cavity photon frequency spacing along the x in-plane direction.",
+                "dimension": "frequency",
+            },
+        ),
+        "domega_y": (
+            InputValue,
+            {
+                "dtype": float,
+                "default": 0.0,
+                "help": "Cavity photon frequency spacing along the y in-plane direction.",
+                "dimension": "frequency",
+            },
+        ),
+        "n_mode_x": (
+            InputValue,
+            {
+                "dtype": int,
+                "default": 1,
+                "help": "Number of k_parallel cavity modes in the x direction.",
+            },
+        ),
+        "n_mode_y": (
+            InputValue,
+            {
+                "dtype": int,
+                "default": 1,
+                "help": "Number of k_parallel cavity modes in the y direction.",
+            },
+        ),
+        "x_grid_1d": (
+            InputArray,
+            {
+                "dtype": float,
+                "default": np.array([0.25]),
+                "help": "Molecular grid along x dimension in units of Lx.",
+                "dimension": "length",
+            },
+        ),
+        "y_grid_1d": (
+            InputArray,
+            {
+                "dtype": float,
+                "default": np.array([0.25]),
+                "help": "Molecular grid along y dimension in units of Ly.",
+                "dimension": "length",
+            },
+        ),
     }
 
     fields.update(InputFFSocket.fields)
@@ -914,19 +1000,29 @@ class InputFFCavPhSocket(InputFFSocket):
         """Takes a ForceField instance and stores a minimal representation of it.
 
         Args:
-           ff: A ForceField object with a FFCavPhSocket forcemodel object.
+           ff: A ForceField object with a FFGenCavSocket forcemodel object.
         """
 
-        if not type(ff) is FFCavPhSocket:
+        if not type(ff) is FFGenCavSocket:
             raise TypeError(
                 "The type " + type(ff).__name__ + " is not a valid socket forcefield"
             )
-        super(InputFFCavPhSocket, self).store(ff)
+        super(InputFFGenCavSocket, self).store(ff)
 
+        self.n_independent_bath.store(ff.n_independent_bath)
+        self.n_qm_atom.store(ff.n_qm_atom)
+        self.mm_charge_array.store(ff.mm_charge_array)
+        self.qm_charge_array.store(ff.qm_charge_array)
         self.charge_array.store(ff.charge_array)
         self.apply_photon.store(ff.apply_photon)
         self.E0.store(ff.E0)
         self.omega_c.store(ff.omega_c)
+        self.domega_x.store(ff.domega_x)
+        self.domega_y.store(ff.domega_y)
+        self.n_mode_x.store(ff.n_mode_x)
+        self.n_mode_y.store(ff.n_mode_y)
+        self.x_grid_1d.store(ff.x_grid_1d)
+        self.y_grid_1d.store(ff.y_grid_1d)
         self.ph_rep.store(ff.ph_rep)
 
     def fetch(self):
@@ -937,10 +1033,10 @@ class InputFFCavPhSocket(InputFFSocket):
         """
 
         if self.threaded.fetch() == False:
-            raise ValueError("FFCavPhFPSockets cannot poll without threaded mode.")
+            raise ValueError("FFGenCavSockets cannot poll without threaded mode.")
 
         # just use threaded throughout
-        return FFCavPhSocket(
+        return FFGenCavSocket(
             pars=self.parameters.fetch(),
             name=self.name.fetch(),
             latency=self.latency.fetch(),
@@ -956,9 +1052,19 @@ class InputFFCavPhSocket(InputFFSocket):
                 match_mode=self.matching.fetch(),
                 exit_on_disconnect=self.exit_on_disconnect.fetch(),
             ),
+            n_independent_bath=self.n_independent_bath.fetch(),
+            n_qm_atom=self.n_qm_atom.fetch(),
+            mm_charge_array=self.mm_charge_array.fetch(),
+            qm_charge_array=self.qm_charge_array.fetch(),
             charge_array=self.charge_array.fetch(),
             apply_photon=self.apply_photon.fetch(),
             E0=self.E0.fetch(),
             omega_c=self.omega_c.fetch(),
+            domega_x=self.domega_x.fetch(),
+            domega_y=self.domega_y.fetch(),
+            n_mode_x=self.n_mode_x.fetch(),
+            n_mode_y=self.n_mode_y.fetch(),
+            x_grid_1d=self.x_grid_1d.fetch(),
+            y_grid_1d=self.y_grid_1d.fetch(),
             ph_rep=self.ph_rep.fetch(),
         )

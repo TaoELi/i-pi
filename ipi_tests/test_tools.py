@@ -174,6 +174,8 @@ def modify_xml_4_dummy_test(
             ff_sockets.append(ff_socket)
         for ff_socket in ff_root.findall("ffcavphsocket"):
             ff_sockets.append(ff_socket)
+        for ff_socket in ff_root.findall("ffgencavsocket"):
+            ff_sockets.append(ff_socket)
 
     for s, ffsocket in enumerate(ff_sockets):
         ffsocket.attrib["mode"] = driver_info["socket_mode"][s]

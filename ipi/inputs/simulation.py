@@ -171,8 +171,12 @@ class InputSimulation(Input):
             {"help": iforcefields.InputFFsGDML.default_help},
         ),
         "ffcavphsocket": (
-            iforcefields.InputFFCavPhSocket,
-            {"help": iforcefields.InputFFCavPhSocket.default_help},
+            iforcefields.InputFFGenCavSocket,
+            {"help": iforcefields.InputFFGenCavSocket.default_help},
+        ),
+        "ffgencavsocket": (
+            iforcefields.InputFFGenCavSocket,
+            {"help": iforcefields.InputFFGenCavSocket.default_help},
         ),
     }
 
@@ -255,10 +259,10 @@ class InputSimulation(Input):
                     _iobj = iforcefields.InputFFCommittee()
                     _iobj.store(_obj)
                     self.extra[_ii] = ("ffcommittee", _iobj)
-                elif isinstance(_obj, eforcefields.FFCavPhSocket):
-                    _iobj = iforcefields.InputFFCavPhSocket()
+                elif isinstance(_obj, eforcefields.FFGenCavSocket):
+                    _iobj = iforcefields.InputFFGenCavSocket()
                     _iobj.store(_obj)
-                    self.extra[_ii] = ("ffcavphsocket", _iobj)
+                    self.extra[_ii] = ("ffgencavsocket", _iobj)
                 elif isinstance(_obj, System):
                     _iobj = InputSystem()
                     _iobj.store(_obj)
@@ -312,6 +316,7 @@ class InputSimulation(Input):
                 or k == "ffsgdml"
                 or k == "ffyaff"
                 or k == "ffcommittee"
+                or k == "ffgencavsocket"
                 or k == "ffcavphsocket"
             ):
                 info(" # @simulation: Fetching" + k, verbosity.low)

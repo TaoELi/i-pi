@@ -1297,13 +1297,25 @@ class FFCommittee(ForceField):
                     r["status"] = "Done"
 
 
-class PhotonDriver:
+class PhotonDriverFabryPerot():
 
     """
     Photon driver for a single cavity mode
     """
 
-    def __init__(self, apply_photon=True, E0=1e-4, omega_c=0.01, ph_rep="loose"):
+    def __init__(
+        self,
+        apply_photon=True,
+        E0=1e-4,
+        omega_c=0.01,
+        domega_x=0.0,
+        domega_y=0.0,
+        n_mode_x=1,
+        n_mode_y=1,
+        x_grid_1d=np.array([0.25]),
+        y_grid_1d=np.array([0.25]),
+        ph_rep="loose",
+    ):
         """
         Initialise PhotonDriver
 
@@ -1313,6 +1325,12 @@ class PhotonDriver:
             apply_photon: Determine if applying light-matter interactions
             E0: varepsilon in the paper (doi.org/10.1073/pnas.2009272117), light-matter coupling strength
             omega_c: cavity frequency at normal incidence
+            domega_x: cavity frequency resolution in the in-plane x direction
+            domega_y: cavity frequency resolution in the in-plane y direction
+            n_mode_x: number of photon normal modes in the in-plane x direction
+            n_mode_y: number of photon normal modes in the in-plane y direction
+            x_grid_1d: array of molecular subsystem grid positions in the x direction
+            y_grid_1d: array of molecular subsystem grid positions in the y direction
             ph_rep: 'loose' or 'dense'. In the current implementation, two energy-degenerate photon modes polarized along x and y directions
                 are coupled to the molecular system. If 'loose', the cavity photons polarized along the x, y directions are represented by two 'L' atoms;
                 the x dimension of the first 'L' atom is coupled to the molecules, and the y dimension of the second 'L' atom is coupled to the molecules.
@@ -1322,20 +1340,34 @@ class PhotonDriver:
         self.apply_photon = apply_photon
         self.E0 = E0
         self.omega_c = omega_c
+        self.domega_x = domega_x
+        self.domega_y = domega_y
+        self.n_mode_x = n_mode_x
+        self.n_mode_y = n_mode_y
+        self.x_grid_1d = x_grid_1d  # units of Lx
+        self.y_grid_1d = y_grid_1d  # units of Ly
 
         if self.apply_photon == False:
-            self.n_mode = 0
+            # self.n_mode = 0
+            self.n_mode_x = 0
+            self.n_mode_y = 0
         elif self.apply_photon == True:
-            self.n_mode = 1
-            self.n_grid = 1
+            # self.n_mode = 1
+            # self.n_grid = 1
             self.ph_rep = ph_rep
             self.init_photon()
 
     def init_photon(self):
         """
-        Initialize the photon environment parameters
+        Initialize the 2D Fabry-Perot geometry and prepare parameters for calculations
         """
 
+        # constraint
+        self.kx_coeff = 1.0
+        self.ky_coeff = 1.0
+
+        # predefined quantities
+        self.n_mode = self.n_mode_x * self.n_mode_y
         if self.ph_rep == "loose":
             self.n_photon = 2 * self.n_mode
         elif self.ph_rep == "dense":
@@ -1343,8 +1375,35 @@ class PhotonDriver:
         self.n_photon_3 = self.n_photon * 3
         self.pos_ph = np.zeros(self.n_photon_3)
 
-        # construct cavity mode frequency array for all photons
-        self.omega_k = np.array([self.omega_c])
+        # generate 2D grid points of molecular bath coords in units of Lx, Ly
+        self.x_grid_2d, self.y_grid_2d = np.meshgrid(self.x_grid_1d, self.y_grid_1d)
+        self.x_grid_2d = np.reshape(self.x_grid_2d, -1)
+        self.y_grid_2d = np.reshape(self.y_grid_2d, -1)
+        self.n_grid = np.size(self.x_grid_2d)
+
+        # generate 2D grid points of kx, ky in units of 1/Lx, 1/Ly
+        self.kx_grid_1d = (
+            np.pi * np.array([i + 1.0 for i in range(self.n_mode_x)]) * self.kx_coeff
+        )
+        self.ky_grid_1d = (
+            np.pi * np.array([i + 1.0 for i in range(self.n_mode_y)]) * self.ky_coeff
+        )
+        self.kx_grid_2d, self.ky_grid_2d = np.meshgrid(self.kx_grid_1d, self.ky_grid_1d)
+        self.kx_grid_2d = np.reshape(self.kx_grid_2d, -1)
+        self.ky_grid_2d = np.reshape(self.ky_grid_2d, -1)
+
+        # construct cavity mode frequency array for all photon dimensions
+        omega_parallel = np.reshape(
+            (
+                (self.kx_grid_2d / np.pi * self.domega_x) ** 2
+                + (self.ky_grid_2d / np.pi * self.domega_y) ** 2
+            )
+            ** 0.5,
+            -1,
+        )
+        print("omega_parallel in cm-1", omega_parallel * 219474.63)
+        self.omega_k = (self.omega_c**2 + omega_parallel**2) ** 0.5
+        print("omega_k in cm-1", self.omega_k * 219474.63)
         if self.ph_rep == "loose":
             self.omega_klambda = np.concatenate((self.omega_k, self.omega_k))
         elif self.ph_rep == "dense":
@@ -1353,8 +1412,8 @@ class PhotonDriver:
             np.array([[x, x, x] for x in self.omega_klambda]), -1
         )
 
-        # construct varepsilon array for all photons
-        self.varepsilon_k = self.E0
+        # construct varepsilon array for all photon dimensions
+        self.varepsilon_k = self.E0 * self.omega_k / np.min(self.omega_k)
         self.varepsilon_klambda = (
             self.E0 * self.omega_klambda / np.min(self.omega_klambda)
         )
@@ -1362,11 +1421,21 @@ class PhotonDriver:
             self.E0 * self.omega_klambda3 / np.min(self.omega_klambda3)
         )
 
-        # cavity mode function acting on the dipole moment
-        self.ftilde_kx = np.array([1.0])
-        self.ftilde_ky = np.array([1.0])
+        # construct renormalized cavity mode function for each molecular grid point
+        self.ftilde_kx = np.zeros((self.n_mode, self.n_grid))
+        self.ftilde_ky = np.zeros((self.n_mode, self.n_grid))
+        for i in range(self.n_grid):
+            x, y = self.x_grid_2d[i], self.y_grid_2d[i]
+            self.ftilde_kx[:, i] = (
+                2.0 * np.cos(self.kx_grid_2d * x) * np.sin(self.ky_grid_2d * y)
+            )
+            self.ftilde_ky[:, i] = (
+                2.0 * np.sin(self.kx_grid_2d * x) * np.cos(self.ky_grid_2d * y)
+            )
         self.ftilde_kx3 = np.reshape(np.array([[x, x, x] for x in self.ftilde_kx]), -1)
         self.ftilde_ky3 = np.reshape(np.array([[x, x, x] for x in self.ftilde_ky]), -1)
+        print("x_grid_2d (units of Lx, Ly)", self.x_grid_2d)
+        print("y_grid_2d (units of Lx, Ly)", self.y_grid_2d)
 
     def split_atom_ph_coord(self, pos):
         """
@@ -1393,8 +1462,8 @@ class PhotonDriver:
         interaction and dipole self energy
 
         Args:
-            dx_array: x-direction dipole array of molecular subsystems
-            dy_array: y-direction dipole array of molecular subsystems
+            dx_array: x-direction dipole array of molecular subsystems in 2d grid
+            dy_array: y-direction dipole array of molecular subsystems in 2d grid
 
         Returns:
             total energy of photonic system
@@ -1490,7 +1559,7 @@ class PhotonDriver:
         return fx, fy
 
 
-class FFCavPhSocket(FFSocket):
+class FFGenCavSocket(FFSocket):
 
     """
     Socket for dealing with cavity photons interacting with molecules by
@@ -1509,13 +1578,23 @@ class FFCavPhSocket(FFSocket):
         active=np.array([-1]),
         threaded=True,
         interface=None,
+        n_independent_bath=1,
+        n_qm_atom=0,
+        mm_charge_array=None,
+        qm_charge_array=None,
         charge_array=None,
         apply_photon=True,
         E0=1e-4,
         omega_c=0.01,
+        domega_x=0.0,
+        domega_y=0.0,
+        n_mode_x=1,
+        n_mode_y=1,
+        x_grid_1d=np.array([0.25]),
+        y_grid_1d=np.array([0.25]),
         ph_rep="loose",
     ):
-        """Initialises FFCavPhFPSocket.
+        """Initialises FFGenCavSocket.
 
         Args:
            latency: The number of seconds the socket will wait before updating
@@ -1541,22 +1620,40 @@ class FFCavPhSocket(FFSocket):
         """
 
         # a socket to the communication library is created or linked
-        super(FFCavPhSocket, self).__init__(
+        super(FFGenCavSocket, self).__init__(
             latency, name, pars, dopbc, active, threaded, interface
         )
 
         # definition of independent baths
-        self.n_independent_bath = 1
+        self.n_independent_bath = n_independent_bath
+        self.mm_charge_array = mm_charge_array
+        self.qm_charge_array = qm_charge_array
         self.charge_array = charge_array
+        self.n_qm_atom = n_qm_atom
 
         # store photonic variables
         self.apply_photon = apply_photon
         self.E0 = E0
         self.omega_c = omega_c
+        self.domega_x = domega_x
+        self.domega_y = domega_y
+        self.n_mode_x = n_mode_x
+        self.n_mode_y = n_mode_y
+        self.x_grid_1d = x_grid_1d
+        self.y_grid_1d = y_grid_1d
         self.ph_rep = ph_rep
         # define the photon environment
-        self.ph = PhotonDriver(
-            apply_photon=apply_photon, E0=E0, omega_c=omega_c, ph_rep=ph_rep
+        self.ph = PhotonDriverFabryPerot(
+            apply_photon=apply_photon,
+            E0=E0,
+            omega_c=omega_c,
+            domega_x=domega_x,
+            domega_y=domega_y,
+            n_mode_x=n_mode_x,
+            n_mode_y=n_mode_y,
+            x_grid_1d=x_grid_1d,
+            y_grid_1d=y_grid_1d,
+            ph_rep=ph_rep,
         )
 
         self._getallcount = 0
@@ -1763,7 +1860,7 @@ class FFCavPhSocket(FFSocket):
             result_tot[1][:ndim_tot:3] += fx_cav
             result_tot[1][1:ndim_tot:3] += fy_cav
             result_tot[1][ndim_tot:] = f_ph
-
+            
         # At this moment, we have sucessfully gathered the CavMD forces
         newreq = ForceRequest(
             {

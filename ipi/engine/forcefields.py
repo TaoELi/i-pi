@@ -2277,7 +2277,7 @@ class FFGridMDSocket(FFSocket):
         """
         f_ext = self.get_external_field_force(pos_grid)
         f_grid = 2.0 * self.mass / self.dt**2 * (self.mu*f_ext*self.dt + (2.0*self.D*self.dt)**0.5 * np.random.randn(self.n_grid_3)) 
-        print(":f_grid: ", f_grid)
+        # print(":f_grid: ", f_grid)
         return f_grid
 
     def get_external_field_force(self, pos_grid):

@@ -199,6 +199,10 @@ frequency in your simulation to make i-PI faster. Use at your own risk!
             iforcefields.InputFFCavPhSocket,
             {"help": iforcefields.InputFFCavPhSocket.default_help},
         ),
+        "ffgridmdsocket": (
+            iforcefields.InputFFGridMDSocket,
+            {"help": iforcefields.InputFFGridMDSocket.default_help},
+        ),
     }
 
     default_help = "This is the top level class that deals with the running of the simulation, including holding the simulation specific properties such as the time step and outputting the data."
@@ -294,6 +298,10 @@ frequency in your simulation to make i-PI faster. Use at your own risk!
                     _iobj = iforcefields.InputFFCavPhSocket()
                     _iobj.store(_obj)
                     self.extra[_ii] = ("ffcavphsocket", _iobj)
+                elif isinstance(_obj, eforcefields.FFGridMDSocket):
+                    _iobj = iforcefields.InputFFGridMDSocket()
+                    _iobj.store(_obj)
+                    self.extra[_ii] = ("ffgridmdsocket", _iobj)
                 elif isinstance(_obj, System):
                     _iobj = InputSystem()
                     _iobj.store(_obj)
@@ -350,6 +358,7 @@ frequency in your simulation to make i-PI faster. Use at your own risk!
                 "ffcommittee",
                 "ffrotations",
                 "ffcavphsocket",
+                "ffgridmdsocket",
             ]:
                 new_ff = v.fetch()
                 if k == "ffsocket":

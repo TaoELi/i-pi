@@ -21,6 +21,7 @@ from ipi.engine.forcefields import (
     FFdmd,
     FFCavPhSocket,
     FFRotations,
+    FFGridMDSocket,
 )
 from ipi.interfaces.sockets import InterfaceSocket
 from ipi.pes import __drivers__
@@ -43,6 +44,7 @@ __all__ = [
     "InputFFdmd",
     "InputFFCavPhSocket",
     "InputFFRotations",
+    "InputFFGridMDSocket",
 ]
 
 
@@ -267,7 +269,7 @@ class InputFFSocket(InputForceField):
            ff: A ForceField object with a FFSocket forcemodel object.
         """
 
-        if type(ff) not in [FFSocket, FFCavPhSocket]:
+        if type(ff) not in [FFSocket, FFCavPhSocket, FFGridMDSocket]:
             raise TypeError(
                 "The type " + type(ff).__name__ + " is not a valid socket forcefield"
             )
@@ -1179,4 +1181,126 @@ class InputFFCavPhSocket(InputFFSocket):
             E0=self.E0.fetch(),
             omega_c=self.omega_c.fetch(),
             ph_rep=self.ph_rep.fetch(),
+        )
+
+
+class InputFFGridMDSocket(InputFFSocket):
+    default_help = """The GirdMD feature for propagating the stochastic MD dynamics of smaller clusters under external applied fields.
+                   """
+    default_label = "FFGRIDMDSOCKET"
+
+    fields = {
+        "n_grid": (
+            InputValue,
+            {
+                "dtype": int,
+                "default": 1,
+                "help": "The number of grid points in the calculation.",
+                "dimension": "number",
+            },
+        ),
+        "mass": (
+            InputValue,
+            {
+                "dtype": float,
+                "default": 1.0,
+                "help": "The assigned mass of each grid point.",
+                "dimension": "mass",
+            },
+        ),
+        "kT": (
+            InputValue,
+            {
+                "dtype": float,
+                "default": 1.0,
+                "help": "The assigned temperature for the stochastic motion of the grid points.",
+                "dimension": "energy",
+            },
+        ),
+        "D": (
+            InputValue,
+            {
+                "dtype": float,
+                "default": 0.0,
+                "help": "The assigned diffusion constant of each grid point.",
+            },
+        ),
+        "timestep": (
+            InputValue,
+            {
+                "dtype": float,
+                "default": 0.0,
+                "help": "The assigned time step of grid point motion, should matching the time step for other atoms.",
+                "dimension": "time",
+            },
+        ),
+        "external_field": ( 
+            InputArray,
+            {
+                "dtype": float,
+                "default": input_default(factory=np.zeros, args=(0,)),
+                "help": "The assigned analytical external field for each grid point.",
+            },
+        ),
+    }
+
+    fields.update(InputFFSocket.fields)
+
+    attribs = {}
+    attribs.update(InputFFSocket.attribs)
+
+    def store(self, ff):
+        """Takes a ForceField instance and stores a minimal representation of it.
+
+        Args:
+           ff: A ForceField object with a FFGridMDSocket forcemodel object.
+        """
+
+        if not type(ff) is FFGridMDSocket:
+            raise TypeError(
+                "The type " + type(ff).__name__ + " is not a valid socket forcefield"
+            )
+        super(InputFFGridMDSocket, self).store(ff)
+
+        self.n_grid.store(ff.n_grid)
+        self.mass.store(ff.mass)
+        self.kT.store(ff.kT)
+        self.D.store(ff.D)
+        self.timestep.store(ff.timestep)
+        self.external_field.store(ff.external_field)
+
+    def fetch(self):
+        """Creates a ForceSocket object.
+
+        Returns:
+           A ForceSocket object with the correct socket parameters.
+        """
+
+        if self.threaded.fetch() == False:
+            raise ValueError("FFCavPhFPSockets cannot poll without threaded mode.")
+
+        # just use threaded throughout
+        return FFGridMDSocket(
+            pars=self.parameters.fetch(),
+            name=self.name.fetch(),
+            latency=self.latency.fetch(),
+            offset=self.offset.fetch(),
+            dopbc=self.pbc.fetch(),
+            active=self.activelist.fetch(),
+            threaded=self.threaded.fetch(),
+            interface=InterfaceSocket(
+                address=self.address.fetch(),
+                port=self.port.fetch(),
+                slots=self.slots.fetch(),
+                mode=self.mode.fetch(),
+                timeout=self.timeout.fetch(),
+                match_mode=self.matching.fetch(),
+                exit_on_disconnect=self.exit_on_disconnect.fetch(),
+            ),
+            n_grid=self.n_grid.fetch(),
+            mass=self.mass.fetch(),
+            kT=self.kT.fetch(),
+            D=self.D.fetch(),
+            timestep=self.timestep.fetch(),
+            external_field=self.external_field.fetch(),
         )

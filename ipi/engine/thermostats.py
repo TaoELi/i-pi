@@ -1285,5 +1285,108 @@ class MultiThermo(Thermostat):
         pass
 
 
+
+class ThermoGridLangevin(Thermostat):
+    """Represents a langevin thermostat.
+
+    Depend objects:
+       tau: Thermostat damping time scale. Larger values give a less strongly
+          coupled thermostat.
+       T: Coefficient of the diffusive contribution of the thermostat, i.e. the
+          drift back towards equilibrium. Depends on tau and the time step.
+       S: Coefficient of the stochastic contribution of the thermostat, i.e.
+          the uncorrelated Gaussian noise. Depends on T and the temperature.
+    """
+
+    def get_T(self):
+        """Calculates the coefficient of the overall drift of the velocities."""
+
+        return np.exp(-self.dt / self.tau)
+
+    def get_S(self):
+        """Calculates the coefficient of the white noise."""
+        return np.sqrt(Constants.kb * self.temp * (1 - self.T**2))
+
+    def get_T_on_sm(self):
+        """Calculates the combined mass scaling and thermostat damping."""
+        return self.T / dstrip(self.sm)
+
+    def __init__(self, temp=1.0, dt=1.0, tau=1.0, ethermo=0.0):
+        """Initialises ThermoLangevin.
+
+        Args:
+           temp: The simulation temperature. Defaults to 1.0.
+           dt: The simulation time step. Defaults to 1.0.
+           tau: The thermostat damping timescale. Defaults to 1.0.
+           ethermo: The initial heat energy transferred to the bath.
+              Defaults to 0.0. Will be non-zero if the thermostat is
+              initialised from a checkpoint file.
+        """
+
+        super(ThermoGridLangevin, self).__init__(temp, dt, ethermo)
+
+        self._tau = depend_value(value=tau, name="tau")
+        self._T = depend_value(
+            name="T", func=self.get_T, dependencies=[self._tau, self._dt]
+        )
+        self._S = depend_value(
+            name="S", func=self.get_S, dependencies=[self._temp, self._T]
+        )
+
+    def bind(self, beads=None, atoms=None, pm=None, nm=None, prng=None, fixdof=None):
+        """Binds the appropriate degrees of freedom to the thermostat."""
+
+        super(ThermoGridLangevin, self).bind(beads, atoms, pm, nm, prng, fixdof)
+
+        self._T_on_sm = depend_value(
+            name="T_on_sm", func=self.get_T_on_sm, dependencies=[self._T, self._sm]
+        )
+    
+    def get_ngrid(self):
+        """Get number of grid points using the mass of the grid points == 200^2 a.u."""
+        sm = dstrip(self.sm)
+        ngrid = int(np.size(sm[sm == 1.0]) // 3.0)
+        return ngrid
+    
+    def step(self):
+        """Updates the bound momentum vector with a langevin thermostat."""
+
+        # This performs the following steps
+        # p <- p*exp(-dt/tau)+xi sqrt(C(1-exp-2dt/tau))
+        # where dt is the thermostat time step (half of the MD step)
+        # and C is the equilibrium fluctuations. to have a single
+        # coefficient (and facilitate computing the kinetic energy)
+        # the change in kinetic energy is computed to accumulate the work made
+        # by the thermostat
+
+        # goes in a single step to mass scaled coordinates and applies damping
+        p = dstrip(self.p) * dstrip(self.T_on_sm)
+
+        deltah = noddot(p, p) / (self.T**2)  # must correct for the "pre-damping"
+        p += self.S * self.prng.gvec(len(p))  # random part (in ms coordinates)
+
+        #print("Debugging: p before resetting =  ", p)
+        # resetting the grid points
+        ngrid = self.get_ngrid()
+        if ngrid == 0:
+            # trig an error if no grid points are found
+            raise ValueError("No grid points found in the mass array")
+        
+        p[-3*ngrid:] = 0.0
+
+        print("Debugging: ngrid =  ", ngrid)
+        print("Debugging: p  after resetting =  ", p)
+
+        deltah -= noddot(p, p)  # new energy
+
+        self.p[:] = p * dstrip(
+            self.sm
+        )  # back to physical momentum and updates actual p
+        self.ethermo += deltah * 0.5
+
+
+dproperties(ThermoGridLangevin, ["tau", "T", "S", "T_on_sm"])
+
+
 def hfunc(x):
     return (np.sign(x) - 1.0) * x

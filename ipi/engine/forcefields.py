@@ -2167,3 +2167,292 @@ class FFCavPhSocket(FFSocket):
         )
 
         return newreq
+
+
+class FFGridMDSocket(FFSocket):
+    """
+    Socket for dealing with diffusive motion of small clusters under an external field
+
+    Independent bath approximation will be made to communicate with many sockets
+    """
+
+    def __init__(
+        self,
+        latency=1.0,
+        offset=0.0,
+        name="",
+        pars=None,
+        dopbc=False,
+        active=np.array([-1]),
+        threaded=True,
+        interface=None,
+        n_grid=1,
+        mass=1.0,
+        kT=1.0,
+        D=1.0,
+        timestep=0.01,
+        external_field=np.array([0.0, 0.0, 1.0]),
+    ):
+        """Initialises FFGridMDSocket.
+
+        Args:
+            latency: The number of seconds the socket will wait before updating
+               the client list.
+            name: The name of the forcefield.
+            pars: A dictionary used to initialize the forcefield, if required.
+               Of the form {'name1': value1, 'name2': value2, ... }.
+            dopbc: Decides whether or not to apply the periodic boundary conditions
+               before sending the positions to the client code.
+            interface: The object used to create the socket used to interact
+               with the client codes.
+            n_grid: Number of grid points
+            mass: Mass of each grid point
+            kT: Temperature
+            D: Diffusion coefficient
+            dt: Time step
+            external_field: External field parameters acting on the grid points
+        """
+
+        # a socket to the communication library is created or linked
+        super(FFGridMDSocket, self).__init__(
+            latency, offset, name, pars, dopbc, active, threaded, interface
+        )
+
+        # definition of independent baths
+        self.n_grid = int(n_grid)
+        self.n_grid_3 = int(self.n_grid * 3)
+
+        # parameters for grid MD
+        # diffusion coefficient
+        self.D = D
+        # temperature
+        self.kT = kT
+        self.mu = self.D / self.kT
+        # default time step
+        self.timestep = timestep
+        self.dt = self.timestep
+        # default mass of each grid point in atomic units
+        self.mass = mass
+        # external field acting on the grid points
+        self.external_field = external_field
+
+        print("During the initialization of FFGridMDSocket")
+        print("n_grid: ", self.n_grid)
+        print("D: ", self.D)
+        print("kT: ", self.kT)
+        print("dt: ", self.dt)
+        print("mass: ", self.mass)
+        print("external_field: ", self.external_field)
+
+        print("mu: ", self.mu)
+
+        # preset the random number seed in this part
+        np.random.seed()
+
+        self._getallcount = 0
+
+    def split_atom_grid_coord(self, pos):
+        """
+        Split atomic and grid coordinates and update our grid coordinates
+
+        Args:
+            pos: A 3*N position numpy array, [1x, 1y, 1z, 2x, ...]
+
+        Returns:
+            Atomic coordinates, Grid coordinates
+        """
+        pos_at = pos[: -self.n_grid_3]
+        pos_grid = pos[-self.n_grid_3 :]        
+        return pos_at, pos_grid
+    
+    def get_grid_force(self, pos_grid):
+        """
+        Calculate the stochastic forces acting on all different grid points
+
+        Args:
+            pos_grid: grid coordinates
+
+        Returns:
+            force array of all grid dimensions (3*ngrid) [1x, 1y, 1z, 2x..]
+        """
+        f_ext = self.get_external_field_force(pos_grid)
+        f_grid = 2.0 * self.mass / self.dt**2 * (self.mu*f_ext*self.dt + (2.0*self.D*self.dt)**0.5 * np.random.randn(self.n_grid_3)) 
+        print(":f_grid: ", f_grid)
+        return f_grid
+
+    def get_external_field_force(self, pos_grid):
+        """
+        Calculate the external field forces acting on all different grid points
+
+        Args:
+            pos_grid: grid coordinates
+
+        Returns:
+            force array of all grid dimensions (3*ngrid) [1x, 1y, 1z, 2x..]
+        """
+        amplitude, x0, spread = self.external_field
+        f_ext = amplitude * np.exp(-(pos_grid - x0)**2 / spread**2)
+        return f_ext
+
+    def queue(self, atoms, cell, reqid=-1):
+        """Adds a request.
+
+        Note that the pars dictionary need to be sent as a string of a
+        standard format so that the initialisation of the driver can be done.
+
+        Args:
+            atoms: An Atoms object giving the atom positions.
+            cell: A Cell object giving the system box.
+            pars: An optional dictionary giving the parameters to be sent to the
+                driver for initialisation. Defaults to {}.
+            reqid: An optional integer that identifies requests of the same type,
+               e.g. the bead index
+
+        Returns:
+            A list giving the status of the request of the form {'pos': An array
+            giving the atom positions folded back into the unit cell,
+            'cell': Cell object giving the system box, 'pars': parameter string,
+            'result': holds the result as a list once the computation is done,
+            'status': a string labelling the status of the calculation,
+            'id': the id of the request, usually the bead number, 'start':
+            the starting time for the calculation, used to check for timeouts.}.
+        """
+
+        par_str = " "
+
+        if not self.pars is None:
+            for k, v in list(self.pars.items()):
+                par_str += k + " : " + str(v) + " , "
+        else:
+            par_str = " "
+
+        pbcpos = dstrip(atoms.q).copy()
+
+        # Indexes come from input in a per atom basis and we need to make a per atom-coordinate basis
+        # Reformat indexes for full system (default) or piece of system
+        # active atoms do not change but we only know how to build this array once we get the positions once
+        if self.iactive is None:
+            if self.active[0] == -1:
+                activehere = np.arange(len(pbcpos))
+            else:
+                activehere = np.array(
+                    [[3 * n, 3 * n + 1, 3 * n + 2] for n in self.active]
+                )
+
+            # Reassign active indexes in order to use them
+            activehere = activehere.flatten()
+
+            # Perform sanity check for active atoms
+            if len(activehere) > len(pbcpos) or activehere[-1] > (len(pbcpos) - 1):
+                raise ValueError("There are more active atoms than atoms!")
+
+            self.iactive = activehere
+
+        newreq_lst = []
+
+        # 1. split coordinates to atoms and grid points
+        pbcpos_atoms, pbcpos_gpts = self.split_atom_grid_coord(pbcpos)
+        ndim_tot = np.size(pbcpos_atoms)
+        ndim_local = int(ndim_tot // self.n_grid)
+
+        # 2. for atomic coordinates, we now evaluate their atomic forces
+        for idx in range(self.n_grid):
+            pbcpos_local = pbcpos_atoms[
+                ndim_local * idx : ndim_local * (idx + 1)
+            ].copy()
+            iactive_local = self.iactive[0:ndim_local]
+            # Let's try to do PBC for the small regions
+            if self.dopbc:
+                cell.array_pbc(pbcpos_local)
+            newreq_local = ForceRequest(
+                {
+                    "id": int(reqid * self.n_grid) + idx,
+                    "pos": pbcpos_local,
+                    "active": iactive_local,
+                    "cell": (dstrip(cell.h).copy(), dstrip(cell.ih).copy()),
+                    "pars": par_str,
+                    "result": None,
+                    "status": "Queued",
+                    "start": -1,
+                    "t_queued": time.time(),
+                    "t_dispatched": 0,
+                    "t_finished": 0,
+                }
+            )
+            newreq_lst.append(newreq_local)
+
+        with self._threadlock:
+            for newreq in newreq_lst:
+                self.requests.append(newreq)
+                self._getallcount += 1
+
+        if not self.threaded:
+            self.poll()
+
+        # sleeps until all the new requests have been evaluated
+        for self.request in newreq_lst:
+            while self.request["status"] != "Done":
+                if self.request["status"] == "Exit" or softexit.triggered:
+                    # now, this is tricky. we are stuck here and we cannot return meaningful results.
+                    # if we return, we may as well output wrong numbers, or mess up things.
+                    # so we can only call soft-exit and wait until that is done. then kill the thread
+                    # we are in.
+                    softexit.trigger(" @ FORCES : cannot return so will die off here")
+                    while softexit.exiting:
+                        time.sleep(self.latency)
+                    sys.exit()
+                time.sleep(self.latency)
+
+            """
+            with self._threadlock:
+                self._getallcount -= 1
+
+            # releases just once, but wait for all requests to be complete
+            if self._getallcount == 0:
+                self.release(self.request)
+                self.request = None
+            else:
+                while self._getallcount > 0:
+                    time.sleep(self.latency)
+            """
+            self.release(self.request)
+            self.request = None
+
+        # ...atomic forces have been calculated at this point
+
+        # 3. At this moment, we combine the small requests to a big mega request (updated results)
+        result_tot = [0.0, np.zeros(len(pbcpos), float), np.zeros((3, 3), float), {}]
+        for idx, newreq in enumerate(newreq_lst):
+            u, f, vir, extra = newreq["result"]
+            result_tot[0] += u
+            result_tot[1][ndim_local * idx : ndim_local * (idx + 1)] = f
+            result_tot[2] += vir
+            result_tot[3][idx] = extra
+
+        if True: # by default we apply the grid MD
+            # 4. calculate the stochastic force acting on the grid points
+            f_grid = self.get_grid_force(pos_grid=pbcpos_gpts)
+
+            # 5. add gird forces to our output
+            result_tot[1][ndim_tot:] = f_grid
+
+        result_tot[0] -= self.offset
+
+        # At this moment, we have sucessfully gathered the CavMD forces
+        newreq = ForceRequest(
+            {
+                "id": reqid,
+                "pos": pbcpos,
+                "active": self.iactive,
+                "cell": (dstrip(cell.h).copy(), dstrip(cell.ih).copy()),
+                "pars": par_str,
+                "result": result_tot,
+                "status": newreq_lst[-1]["status"],
+                "start": newreq_lst[0]["start"],
+                "t_queued": newreq_lst[0]["t_queued"],
+                "t_dispatched": newreq_lst[0]["t_dispatched"],
+                "t_finished": newreq_lst[-1]["t_finished"],
+            }
+        )
+
+        return newreq

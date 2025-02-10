@@ -196,8 +196,9 @@ def get_system_info():
 
     # Get the machine name (hostname)
     try:
-        with open("/etc/hostname", "r") as file:
-            machine_name = file.read().strip()
+        machine_name = "Unknown"
+        #with open("/etc/hostname", "r") as file:
+        #    machine_name = file.read().strip()
     except FileNotFoundError:
         machine_name = "Unknown"  # Fallback in case the file is not found
 

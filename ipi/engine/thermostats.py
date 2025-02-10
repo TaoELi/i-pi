@@ -1374,8 +1374,8 @@ class ThermoGridLangevin(Thermostat):
         
         p[-3*ngrid:] = 0.0
 
-        print("Debugging: ngrid =  ", ngrid)
-        print("Debugging: p  after resetting =  ", p)
+        #print("Debugging: ngrid =  ", ngrid)
+        #print("Debugging: p  after resetting =  ", p)
 
         deltah -= noddot(p, p)  # new energy
 

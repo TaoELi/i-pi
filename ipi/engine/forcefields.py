@@ -2191,7 +2191,8 @@ class FFGridMDSocket(FFSocket):
         kT=1.0,
         D=1.0,
         timestep=0.01,
-        external_field=np.array([0.0, 0.0, 1.0]),
+        external_field=np.array([0.0, 0.0, 0.0, 0.0]),
+        partial_charge=np.array([0.0, 0.0, 0.0]),
     ):
         """Initialises FFGridMDSocket.
 
@@ -2235,6 +2236,7 @@ class FFGridMDSocket(FFSocket):
         self.mass = mass
         # external field acting on the grid points
         self.external_field = external_field
+        self.partial_charge = partial_charge
 
         print("During the initialization of FFGridMDSocket")
         print("n_grid: ", self.n_grid)
@@ -2243,6 +2245,19 @@ class FFGridMDSocket(FFSocket):
         print("dt: ", self.dt)
         print("mass: ", self.mass)
         print("external_field: ", self.external_field)
+        # assuming gaussian profile of the E-field
+        if len(self.external_field) != 4:
+            softexit.trigger(
+                "external_field should be a numpy array with four elements: [amplitude, spread, center, cutoff]"
+            )
+        self.e_amp, self.e_sigma, self.e_center, self.e_cutoff = self.external_field
+        print("At this moment, we need four parameters to define the external field:")
+        print("e_amp: ", self.e_amp)
+        print("e_sigma: ", self.e_sigma)
+        print("e_center: ", self.e_center)
+        print("e_cutoff: ", self.e_cutoff)
+
+        print("partial_charge defined for atoms in each grid point: ", self.partial_charge)
 
         print("mu: ", self.mu)
 
@@ -2280,6 +2295,93 @@ class FFGridMDSocket(FFSocket):
         # print(":f_grid: ", f_grid)
         return f_grid
 
+    def get_efield_force_atom(self, pos_atoms, pos_grid):
+        """
+        Calculate the external electric field forces acting on all atoms
+    
+        Args:
+            pos_atoms: atomic positions, shape (3 * num_atoms,)
+            pos_grid: grid point coordinates, shape (3 * num_grid,) – used to calculate E field
+ 
+        Returns:
+            f_ext: force on all atoms, shape (3 * num_atoms,)
+        """
+        partial_q = self.partial_charge              # shape: (num_atoms,)
+        efield_grid = self.e_field_func(pos_grid)    # shape: (3,)
+   
+        num_atoms_per_grid = len(partial_q)
+        assert len(pos_atoms) == 3 * num_atoms_per_grid * self.n_grid
+        # assuming a general-purpose case of multiple grid points (each containing a set of atoms)
+        assert len(efield_grid) == self.n_grid_3                 #  Ex, Ey, Ez
+
+        # Expand partial charges to 3D format corresponding to atomic coordinates in each grid point
+        q_used = np.repeat(partial_q, 3)              # shape: (3 * num_atoms in each grid point,)
+        q_used = np.tile(q_used, self.n_grid)
+
+        # Repeat the same field vector for each atom
+        e_field = np.tile(efield_grid, num_atoms_per_grid)     # shape: (3 * num_atoms,)
+
+        f_ext = q_used * e_field                        # shape: (3 * num_atoms,)
+        return f_ext
+
+    def kelvin_force(self, pos_grad):
+        """
+        To be used...
+        """
+        mu_0 = 7.264e-10  # vacuum magnetic permeability = 4 pi alpha^2/c^2
+        b0 = 0.63  # Tesla
+        slope_b = 110  # T/m
+        b0 = b0 * 4.254*1.0e-6 # a.u. : 1 T ≈ 4.2545×10−6 a.u. 
+        slope_b = slope_b * 4.254*1.0e-6/1.88973e10 # a.u.: 1 m ≈1.88973×10^{10} a.u. 
+        bfield = b0 - slope_b * pos_grad
+        dbfield_dx = -slope_b  
+        return (1/mu_0) * bfield * dbfield_dx
+
+    def e_field_func(self, pos_grid):
+        """
+        Compute E-field (Gaussian in x) at each grid point.
+
+        Args:
+            pos_grid: flat array shape (3*num_grids,).
+
+        Returns: 
+            E-field: flat array shape (3*num_grids,) = [Ex1, Ey1, Ez1, Ex2, Ey2, Ez2, …].
+        """
+        # ensure shape (num_grids,3)
+        pos = np.asarray(pos_grid).reshape(-1, 3)
+        # pos_diff is the relative difference between the grid point and the center of the E-field
+        pos_diff = pos[:, 0] -  self.e_center 
+        # now let's take care of boundary conditions with the length of E-field spanning as e_cutoff
+        # we assume that pos_diff always centers around center +- e_cutoff/2.0
+        pos_diff -= np.round(pos_diff / self.e_cutoff) * self.e_cutoff
+
+        # assuming Gaussian in 1D (x-direction), homogenenous in y and z directions
+        Ex = self.e_amp * np.exp(-(pos_diff)**2 / (2.0*self.e_sigma**2))
+        E = np.zeros_like(pos)      # shape (num_grids,3)
+        E[:, 0] = Ex
+        return E.ravel()            # shape (3*num_grids,)
+
+
+    def e_grad_field_func(self, pos_grid):
+        """
+        Compute E-field (Gaussian in x) at each grid point.
+        Args:
+            pos_grid: flat array shape (3*num_grids,).
+        Returns: 
+            E_deriv: flat array shape (3*num_grids,) = [dEx1/dx1, Ey1, Ez1, dEx2/dx2, Ey2, Ez2, …].
+        """
+        # ensure shape (num_grids,3)
+        pos = np.asarray(pos_grid).reshape(-1, 3)
+        pos_diff = pos[:, 0] - self.e_center
+        # now let's take care of boundary conditions with the length of E-field as e_cutoff
+        # assuming that pos_diff always centers around center +- e_cutoff/2.0
+        pos_diff -= np.round(pos_diff / self.e_cutoff) * self.e_cutoff
+        # assuming Gaussian in 1D (x-direction), homogenenous in y and z directions
+        dEx_dx =  - self.e_amp * pos_diff / self.e_sigma**2 * np.exp(-pos_diff**2 / (2.0 * self.e_sigma**2))
+        gradE = np.zeros_like(pos)
+        gradE[:, 0] = dEx_dx
+        return gradE.ravel()
+
     def get_external_field_force(self, pos_grid):
         """
         Calculate the external field forces acting on all different grid points
@@ -2290,8 +2392,20 @@ class FFGridMDSocket(FFSocket):
         Returns:
             force array of all grid dimensions (3*ngrid) [1x, 1y, 1z, 2x..]
         """
-        amplitude, x0, spread = self.external_field
-        f_ext = amplitude * np.exp(-(pos_grid - x0)**2 / spread**2)
+        beta = 1/self.kT
+        # for now, the water dipole is used as a reference
+        mu = 0.93   # spce water dipole in atomic units
+        efield =  self.e_field_func(pos_grid) 
+        partial_efield = self.e_grad_field_func(pos_grid)
+        yy = beta * mu * efield
+        #LL = 1/np.tanh(yy) - 1/yy
+        # Langevin L(y) = coth(y) - 1/y, with L(0)=0 handled
+        # the issue of the following implementation is that in most cases yy is very small
+        # and we need to avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            langevin = 1.0/np.tanh(yy) - 1.0/yy
+            langevin = np.where(np.abs(yy) < 1e-8, 0.0, langevin)
+        f_ext = mu * partial_efield * langevin
         return f_ext
 
     def queue(self, atoms, cell, reqid=-1):
@@ -2430,11 +2544,16 @@ class FFGridMDSocket(FFSocket):
             result_tot[3][idx] = extra
 
         if True: # by default we apply the grid MD
-            # 4. calculate the stochastic force acting on the grid points
+            # 4.1 calculate the biased (due to external field) stochastic force acting on the grid points
             f_grid = self.get_grid_force(pos_grid=pbcpos_gpts)
+            # 4.2 calculate the external field force on each atom due to the instantaneous location of the grid points
+            f_atom_ext_ef = self.get_efield_force_atom(pos_atoms=pbcpos_atoms, pos_grid=pbcpos_gpts)
 
-            # 5. add gird forces to our output
+            # 5.1 add grid forces to our output
             result_tot[1][ndim_tot:] = f_grid
+
+            # 5.2: add external force on each atom due to the instantaneous location of the grid points
+            result_tot[1][0:ndim_tot] = f_atom_ext_ef
 
         result_tot[0] -= self.offset
 

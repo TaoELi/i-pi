@@ -1242,6 +1242,14 @@ class InputFFGridMDSocket(InputFFSocket):
                 "help": "The assigned analytical external field for each grid point.",
             },
         ),
+        "partial_charge" : (
+            InputArray,
+            {
+                "dtype": float,
+                "default": input_default(factory=np.zeros, args=(0,)),
+                "help": "The assigned partial charge for each atom in each grid point.",
+            },
+        )
     }
 
     fields.update(InputFFSocket.fields)
@@ -1268,6 +1276,7 @@ class InputFFGridMDSocket(InputFFSocket):
         self.D.store(ff.D)
         self.timestep.store(ff.timestep)
         self.external_field.store(ff.external_field)
+        self.partial_charge.store(ff.partial_charge)
 
     def fetch(self):
         """Creates a ForceSocket object.
@@ -1303,4 +1312,5 @@ class InputFFGridMDSocket(InputFFSocket):
             D=self.D.fetch(),
             timestep=self.timestep.fetch(),
             external_field=self.external_field.fetch(),
+            partial_charge=self.partial_charge.fetch(),
         )

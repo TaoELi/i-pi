@@ -2553,7 +2553,7 @@ class FFGridMDSocket(FFSocket):
             result_tot[1][ndim_tot:] = f_grid
 
             # 5.2: add external force on each atom due to the instantaneous location of the grid points
-            result_tot[1][0:ndim_tot] = f_atom_ext_ef
+            result_tot[1][0:ndim_tot] += f_atom_ext_ef
 
         result_tot[0] -= self.offset
 
